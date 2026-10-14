@@ -11,3 +11,4 @@
 @media(max-width:780px){.map-instruction{font-size:13px}.map-footer>span{font-size:12px}}
 .map-unavailable{pointer-events:auto;display:flex;flex-direction:column;gap:8px;z-index:5}.map-unavailable button{min-height:56px;background:white;border:1px solid #eddfbd;border-radius:6px;font-size:14px}.map-attribution{font-size:11px;max-width:calc(100% - 190px);line-height:1.5;z-index:6}
 @media(max-width:400px){.map-attribution{max-width:calc(100% - 155px);font-size:10px}}
+.cancel-location{width:100%;min-height:56px;padding:10px 12px;font-size:15px}

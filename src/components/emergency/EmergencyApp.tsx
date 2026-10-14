@@ -137,16 +137,22 @@ export function EmergencyApp({ demo = false }: { demo?: boolean }) {
   function beginManual() { if (busy || frozenSubmission.current) return; manuallyEdited.current = true; stop(); }
   function choose(point: Point, fromSearch = false) {
     if (busy || frozenSubmission.current || !inIran(point)) return;
+    beginManual();
     if (zoom < 14 && !fromSearch) {
       setCenter(point);
       emit({ type: "FALLBACK", clearFix: true, message: "ابتدا نام شهر یا خیابان را جست‌وجو کنید و نقشه را بزرگ کنید؛ سپس درِ ورودی را انتخاب کنید." });
       return;
     }
-    beginManual(); setCenter(point); setZoom(fromSearch ? 17 : zoom); setPatientAddress("");
+    setCenter(point); setZoom(fromSearch ? 17 : zoom); setPatientAddress("");
     emit({ type: "MANUAL", fix: { ...point, source: "manual", accuracy: null, timestamp: Date.now() } });
   }
+  function cancelLocation() {
+    beginManual();
+    emit({ type: "FALLBACK", message: "محل بیمار را روی نقشه انتخاب کنید و نشانی را بررسی کنید." });
+    elementFocus();
+  }
   function locate() {
-    if (busy || frozenSubmission.current) return;
+    if (busy || frozenSubmission.current || pending) return;
     manuallyEdited.current = false; setPatientAddress(""); start();
   }
   async function submit() {
@@ -205,6 +211,7 @@ export function EmergencyApp({ demo = false }: { demo?: boolean }) {
             {expired && <p className="inline-error" role="alert">لینک منقضی شده است. از اپراتور لینک تازه بخواهید یا با ۱۱۵ تماس بگیرید.</p>}
             {!session && !demo && !loading && state.phase !== "critical" && <button className="secondary-button" onClick={() => { setLoading(true); setNetworkRetry(v => v + 1); }}>تلاش دوباره برای اتصال</button>}
             <button className="gps-button" onClick={locate} disabled={mapDisabled || pending}><Icon name="locate" size={23} /><span>{pending ? "در حال پیدا کردن موقعیت…" : "موقعیت من را پیدا کن"}</span>{!pending && <Icon name="arrow" size={19} />}</button>
+            {pending && <button className="secondary-button cancel-location" onClick={cancelLocation} disabled={mapDisabled}>توقف جست‌وجو و انتخاب روی نقشه</button>}
             <div className="or-divider"><span />یا خودتان محل را انتخاب کنید<span /></div>
             <button className="manual-button" disabled={mapDisabled} onClick={() => { choose(center); elementFocus(); }}><Icon name="pin" size={20} />این نقطه، محل حضور بیمار است<Icon name="check" size={18} /></button>
             <button className="details-toggle" onClick={() => setDetailsOpen(v => !v)} aria-expanded={detailsOpen} disabled={mapDisabled}><span><Icon name="plus" size={18} />نشانی و راهنمای رسیدن <small>{addressStatus === "missing" ? "ضروری" : "اختیاری"}</small></span><Icon name="chevron" size={18} className={detailsOpen ? "rotated" : ""} /></button>

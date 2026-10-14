@@ -4,6 +4,7 @@ export type State = { phase: Phase; fix: Fix | null; problem: string | null; rec
 export type Event =
   | { type: "REQUEST" }
   | { type: "SAMPLE"; fix: Fix; locked: boolean }
+  | { type: "LOCATION_PROGRESS"; message: string }
   | { type: "MANUAL"; fix?: Fix }
   | { type: "FALLBACK"; message: string; clearFix?: boolean }
   | { type: "SEND" }
@@ -14,6 +15,7 @@ export function reducer(state: State, event: Event): State {
   if (state.phase === "submitted" || state.phase === "critical") return state;
   switch (event.type) {
     case "REQUEST": return state.phase === "submitting" ? state : { ...state, phase: "requesting", problem: null };
+    case "LOCATION_PROGRESS": return ["requesting", "calibrating"].includes(state.phase) && state.problem !== event.message ? { ...state, phase: "calibrating", problem: event.message } : state;
     case "SAMPLE": return ["requesting", "calibrating", "locked"].includes(state.phase) ? { ...state, phase: event.locked ? "locked" : "calibrating", fix: event.fix, problem: null } : state;
     case "MANUAL": return state.phase === "submitting" ? state : { ...state, phase: "manual", fix: event.fix ?? state.fix, problem: null };
     case "FALLBACK": return state.phase === "submitting" ? state : { ...state, phase: "manual", fix: event.clearFix ? null : state.fix, problem: event.message };

@@ -79,7 +79,7 @@ Browser smoke tests intercept and fulfill tile requests with local fixtures; the
 | `src/lib/location/engine.ts` | Freshness, uncertainty-aware speed rejection, rolling stability, conservative GPS lock |
 | `src/lib/location/geometry.ts` | Iran polygon containment, distance, map projection |
 | `src/lib/location/machine.ts` | Explicit permission, calibration, lock, manual, submission, terminal transitions |
-| `src/lib/location/use-location.ts` | `watchPosition`, secure-context checks, 20-second fallback, stale watchdog, cleanup |
+| `src/lib/location/use-location.ts` | `watchPosition`, secure-context checks, 15-second acquisition deadline, stale watchdog, cleanup |
 | `src/lib/location/services.ts` | Aborted/debounced geocoding/search, timeout-bounded API calls, dispatch retries |
 | `src/components/emergency/LocationMap.tsx` | Native slippy map, fixed pin, zoom buttons, tap and keyboard alternatives to dragging |
 | `src/lib/server/` | Token resolution, provider transport, bounded input, trusted ingress IP extraction |
@@ -162,10 +162,22 @@ Gateway must atomically bind an idempotency key to the payload digest and receip
 
 On retry, server first calls gateway `POST dispatch/status` with the same full envelope and idempotency key. Reply is the same receipt if accepted, or `{"locationAccepted":false}` if **authoritatively not accepted**. Serialize status with concurrent submissions and verify the payload digest. Unknown status must error, not return false. A stale GPS payload may look up its original receipt but cannot create a new dispatch. If receipt is absent and GPS expired, server returns 409; UI clears selection and permits fresh acquisition/manual confirmation. Expired sessions still require operator assistance.
 
+## Browser location acquisition and desktop fallback
+
+Location permission allows the browser to request a position; it does not guarantee GPS hardware, fresh callbacks, or street-level precision. `watchPosition` is change-driven and does not promise periodic readings. A stationary laptop may give one Wi-Fi/network estimate while this application's conservative lock needs three fresh readings and a 35–65m conservative radius. A location pin displayed by another map is not proof that this stricter precision requirement is met.
+
+`src/lib/location/acquisition.ts` now owns the lifecycle independently of React. It combines a continuous watch with non-overlapping fresh `getCurrentPosition` probes, rejects repeated cached timestamps, and ends initial acquisition after **15 seconds** even if native callbacks never arrive. The browser's own timeout does not include all permission/background waiting, so the controller additionally checks wall-clock deadlines when the tab/page resumes. Transient native timeout/unavailable errors do not prematurely kill a watch that can still deliver a valid fix. Permission denial stops immediately and opens instructions.
+
+The first valid estimate centers the map and explicitly reports approximate progress. Poor/coarse estimates never gain a false precise-lock label; after the deadline they require patient manual verification. Out-of-Iran, stale, invalid, and unstable readings show actionable Persian reasons. Patients can cancel acquisition and select manually at any time.
+
+A fresh precise lock stays selected when subsequent samples become poorer. The previous implementation cleared its initial timeout at first lock but then let a worse sample restore calibration, causing a prolonged spinner. A separate freshness watchdog now expires that lock after 30 seconds without a replacement precise fix; it never silently returns to indefinite calibration. Stop/retry/unmount cancel owned timers/listeners/watchers; uncancellable one-shot callbacks from old runs are ignored.
+
+Acquisition tests cover silent sensors, stationary desktop watches, coarse-only estimates, repeated timestamps, lock degradation, transient errors, synchronous WebView callbacks, denial, cancellation, background throttling, and retry isolation. Browser tests use matching synthetic sensor scenarios. These tests establish state/lifecycle correctness, not the precision of a user's actual OS/network estimate.
+
 ## Precision limits
 
 - Browser location may combine GNSS, Wi-Fi, and cell signals. JavaScript cannot identify its physical sensor, undo deliberate GPS jamming, or prove coordinates are authentic. Smooth spoofing can pass consistency filters. A stable lock is a validated browser estimate, not guaranteed truth.
-- Reject invalid radii, duplicate/non-increasing timestamps, fixes older than 15 seconds, future timestamps, points outside the bundled Iran polygon, and travel above 50m/s after accounting for both reported uncertainties. Keep five samples in a 15-second window. Lock needs three stable samples spanning at least two seconds, with every reported radius and conservative output radius within 35m; after 12 seconds, threshold relaxes to 65m. Uncertainty never shrinks by averaging correlated readings.
+- Reject invalid radii, duplicate/non-increasing timestamps, fixes older than 15 seconds, future timestamps, points outside the bundled Iran polygon, and travel above 50m/s after accounting for both reported uncertainties. Keep five samples spaced at least one second apart in a 15-second window; ordering/speed checks still inspect every accepted reading. Dense watch/probe bursts therefore cannot evict the history needed for a two-second stable lock. Lock needs three stable samples spanning at least two seconds, with every reported radius and conservative output radius within 35m; after 12 seconds, threshold relaxes to 65m. Uncertainty never shrinks by averaging correlated readings.
 - Conservative output radius is the maximum recent reported radius plus each sample's distance from the latest fix. It is not an independently measured or guaranteed error bound. Never present it as a guarantee.
 - GPS lock becomes stale after 30 seconds; carrier/IP baseline after two minutes. Source and uncertainty remain distinct. Manual selection reports `accuracy:null` and patient verification, not fabricated meter accuracy. National-level map view cannot be submitted as a precise doorway; zoom/search first.
 - Iran polygons are extracted from [datasets/geo-countries](https://github.com/datasets/geo-countries), which uses Natural Earth geometry. This is geographic filtering, not an official survey/jurisdiction boundary. Confirm operational border/island coverage with your dispatch authority before deployment.

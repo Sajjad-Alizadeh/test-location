@@ -139,3 +139,26 @@ test("Stable individual radii cannot lock when conservative combined uncertainty
   assert.ok(result.accepted);
   if (result.accepted) { assert.ok(result.fix.accuracy! > 35); assert.equal(result.locked, false); }
 });
+
+test("Rapid fresh sensor bursts do not evict history required for accurate lock", () => {
+  const engine = new LocationEngine(time);
+  let locked = false;
+  for (let elapsed = 0; elapsed <= 2500; elapsed += 100) {
+    const result = engine.ingest(fix(time + elapsed), time + elapsed);
+    assert.ok(result.accepted);
+    if (result.accepted) { if (elapsed < 2000) assert.equal(result.locked, false); locked ||= result.locked; }
+  }
+  assert.equal(locked, true);
+});
+test("Dense sample ordering remains strict between retained history frames", () => {
+  const engine = new LocationEngine(time);
+  engine.ingest(fix(time), time); engine.ingest(fix(time + 400), time + 400);
+  assert.deepEqual(engine.ingest(fix(time + 300), time + 500), { accepted: false, reason: "stale" });
+});
+test("Unretained current coarse sample cannot borrow precise uncertainty from history", () => {
+  const engine = new LocationEngine(time);
+  for (let elapsed = 0; elapsed <= 2000; elapsed += 1000) engine.ingest(fix(time + elapsed), time + elapsed);
+  const result = engine.ingest(fix(time + 2200, { accuracy: 900 }), time + 2200);
+  assert.ok(result.accepted);
+  if (result.accepted) { assert.ok(result.fix.accuracy! >= 900); assert.equal(result.locked, false); }
+});

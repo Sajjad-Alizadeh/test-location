@@ -127,12 +127,20 @@ try {
         }
         return nativeFetch(input,options);
       };
-      const timers=new Map();let count=0;
+      const timers=new Map();let count=0;const sensorStarted=Date.now();
+      const sensorPosition=()=>({coords:{latitude:35.71522,longitude:51.40595,accuracy:scenario==='coarse'||scenario==='downgrade'&&Date.now()-sensorStarted>3000?900:12},timestamp:Date.now()});
       Object.defineProperty(navigator,'geolocation',{value:{
         watchPosition(success,error){
           const id=++count;window.__lateGPS=success;
           if(scenario==='denied'){timers.set(id,[setTimeout(()=>error({code:1}),50)]);return id;}
-          const handles=[100,1200,2400].map(delay=>setTimeout(()=>success({coords:{latitude:35.71522,longitude:51.40595,accuracy:12},timestamp:Date.now()}),delay));timers.set(id,handles);return id;
+          if(scenario==='silent'){timers.set(id,[]);return id;}
+          const delays=scenario==='stationary'||scenario==='coarse'?[100]:[100,1200,2400,3600];
+          const handles=delays.map(delay=>setTimeout(()=>success(sensorPosition()),delay));timers.set(id,handles);return id;
+        },
+        getCurrentPosition(success,error){
+          if(scenario==='silent')return;
+          if(scenario==='denied'){setTimeout(()=>error({code:1}),30);return;}
+          setTimeout(()=>success(sensorPosition()),30);
         },
         clearWatch(id){window.__watchStops++;(timers.get(id)||[]).forEach(clearTimeout);}
       }});
@@ -160,6 +168,27 @@ try {
   await waitFor(`!!document.querySelector('dialog[open]')`);
   assert.equal(await evaluate(`document.querySelector('.location-status').textContent.includes('انتخاب‌شده')`), true);
   assert.equal(await evaluate(`document.querySelector('.send-area button').disabled`), true);
+  await navigate('/locate?scenario=stationary#token='+'A'.repeat(43));
+  await waitFor(`document.querySelector('.location-status').textContent.includes('با دقت ثبت شد')`);
+  await navigate('/locate?scenario=downgrade#token='+'A'.repeat(43));
+  await waitFor(`document.querySelector('.location-status').textContent.includes('با دقت ثبت شد')`);
+  await sleep(3500);
+  assert.equal(await evaluate(`document.querySelector('.location-status').textContent.includes('با دقت ثبت شد')`),true);
+  assert.equal(await evaluate(`!!document.querySelector('.location-status .spinner')`),false);
+  await navigate('/locate?scenario=coarse#token='+'A'.repeat(43));
+  await waitFor(`document.querySelector('.inline-error')?.textContent.includes('تقریبی')`);
+  await waitFor(`!document.querySelector('.location-status .spinner')`,19000);
+  assert.equal(await evaluate(`document.querySelector('.location-status').textContent.includes('انتخاب‌شده')`),true);
+  assert.equal(await evaluate(`document.querySelector('.gps-button').disabled`),false);
+  await navigate('/locate?scenario=silent#token='+'A'.repeat(43));
+  await waitFor(`!!document.querySelector('.cancel-location')`);
+  await waitFor(`!document.querySelector('.location-status .spinner')`,19000);
+  assert.equal(await evaluate(`document.querySelector('.gps-button').disabled`),false);
+  await evaluate(`document.querySelector('.gps-button').click()`);
+  await waitFor(`!!document.querySelector('.cancel-location')`);
+  await evaluate(`document.querySelector('.cancel-location').click()`);
+  await waitFor(`!document.querySelector('.location-status .spinner')`);
+  console.log('PASS: stationary desktop watch locks via active probes; coarse/silent sensors exit loading; poorer samples do not reopen spinner; manual cancel works.');
   await call('Page.removeScriptToEvaluateOnNewDocument', { identifier: mock.identifier });
   console.log('PASS: three-sample GPS lock, token scrub, manual stops GPS, late GPS ignored, uncertain delivery retry uses same payload/key, denied permissions fallback.');
 
