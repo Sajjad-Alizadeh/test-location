@@ -11,6 +11,9 @@ await new Promise(resolve => ws.addEventListener('open', resolve, { once: true }
 let id = 0;
 const pending = new Map();
 const exceptions = [];
+const tileRequests = [];
+let failFirstTile = true;
+const tileFixture = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#e9eee7"/><path d="M0 100H256M110 0V256" stroke="white" stroke-width="16"/></svg>').toString('base64');
 ws.addEventListener('message', event => {
   const data = JSON.parse(event.data);
   if (data.id) {
@@ -18,6 +21,19 @@ ws.addEventListener('message', event => {
     if (entry) { pending.delete(data.id); if (data.error) entry.reject(Error(JSON.stringify(data.error))); else entry.resolve(data.result); }
   }
   if (data.method === 'Runtime.exceptionThrown') exceptions.push(data.params.exceptionDetails.text);
+  if (data.method === 'Fetch.requestPaused') {
+    const request = data.params.request;
+    const referrer = Object.entries(request.headers).find(([name]) => name.toLowerCase() === 'referer')?.[1];
+    tileRequests.push({ url: request.url, referrer });
+    const fail = failFirstTile;
+    failFirstTile = false;
+    // No image request ever reaches OSM or another external provider in this suite.
+    call('Fetch.fulfillRequest', {
+      requestId: data.params.requestId, responseCode: fail ? 503 : 200,
+      responseHeaders: [{ name: 'Content-Type', value: fail ? 'text/plain' : 'image/svg+xml' }, { name: 'Cache-Control', value: 'public, max-age=604800' }],
+      body: fail ? Buffer.from('fixture unavailable').toString('base64') : tileFixture,
+    }).catch(error => exceptions.push(error.message));
+  }
 });
 const call = (method, params = {}) => new Promise((resolve, reject) => {
   const request = ++id;
@@ -49,8 +65,18 @@ async function screenshot(name) {
 }
 try {
   await call('Page.enable'); await call('Runtime.enable'); await call('Network.enable');
+  await call('Network.clearBrowserCache');
+  await call('Fetch.enable', { patterns: [{ urlPattern: '*', resourceType: 'Image', requestStage: 'Request' }] });
   await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await navigate('/');
+  await waitFor(`!!document.querySelector('.map-unavailable button')`);
+  await evaluate(`document.querySelector('.map-unavailable button').click()`);
+  await waitFor(`!document.querySelector('.map-unavailable')`);
+  assert.ok(tileRequests.length > 0);
+  const failedUrl = tileRequests[0].url;
+  assert.ok(tileRequests.filter(request => request.url === failedUrl).length >= 2, 'retry must reuse original URL/cache semantics');
+  assert.equal(await evaluate(`document.querySelector('.map-tiles img').referrerPolicy`), 'origin');
+  assert.equal(await evaluate(`document.querySelector('meta[name="referrer"]').content`), 'no-referrer');
   assert.equal(await evaluate(`document.documentElement.lang`), 'fa');
   assert.equal(await evaluate(`document.documentElement.dir`), 'rtl');
   assert.equal(await evaluate(`document.querySelector('.context-bar').textContent.includes('هیچ موقعیتی')`), true);
@@ -143,6 +169,8 @@ try {
   assert.equal(malformed.status,401);
   const oversized = await fetch(origin+'/api/emergency/session',{method:'POST',headers:{'Origin':origin,'Content-Type':'application/json'},body:JSON.stringify({token:'a'.repeat(9000)})});
   assert.equal(oversized.status,413);
+  assert.ok(tileRequests.every(request => request.referrer === origin + '/'), 'tile Referer must contain only app origin, never path, query, or token');
   assert.deepEqual(exceptions,[]);
+  console.log('PASS: origin-only tile Referer overrides private document policy, failed-tile recovery, unchanged retry URL, zero external tile traffic.');
   console.log('PASS: actual API rejects forged Origin, malformed token, oversized request; zero browser exceptions.');
 } finally { ws.close(); }

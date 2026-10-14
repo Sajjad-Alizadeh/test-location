@@ -1,23 +1,29 @@
 "use client";
-/* Map tiles need native, unoptimized 256px images; provider controls tile caching. */
-/* eslint-disable @next/next/no-img-element */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { inIran, project, unproject } from "@/lib/location/geometry";
 import type { Point } from "@/lib/location/types";
+import { clampMapZoom, mapZoomLimits, readMapEnvironment, resolveMapProvider } from "@/lib/map/providers";
+import { visibleTiles } from "@/lib/map/tiles";
+import { RasterTileLayer } from "./RasterTileLayer";
 import { Icon } from "./Icon";
 
-export function LocationMap({ center, zoom, onZoom, onChange, onInteract, onLocate, disabled, radius, demo }: {
+export function LocationMap({ center, zoom: requestedZoom, onZoom, onChange, onInteract, onLocate, disabled, radius, demo }: {
   center: Point; zoom: number; onZoom: (zoom: number) => void; onChange: (point: Point) => void;
   onInteract: () => void; onLocate: () => void; disabled: boolean; radius: number | null; demo: boolean;
 }) {
   const element = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ width: 800, height: 480 });
+  const [size, setSize] = useState({ width: 0, height: 0 });
   const [offset, setOffset] = useState({ x: 0, y: 0 });
-  const [failed, setFailed] = useState(false);
   const [buttons, setButtons] = useState(false);
   const drag = useRef<{ id: number; x: number; y: number; center: Point } | null>(null);
+  const configuration = useMemo(() => resolveMapProvider(readMapEnvironment(), demo), [demo]);
+  const provider = configuration.status === "ready" ? configuration.provider : null;
+  const zoom = clampMapZoom(requestedZoom, provider);
+  const limits = mapZoomLimits(provider);
   const pixel = project(center, zoom);
-  const tileTemplate = process.env.NEXT_PUBLIC_MAP_TILE_URL || (demo ? "https://tile.openstreetmap.org/{z}/{x}/{y}.png" : "");
+  useEffect(() => {
+    if (configuration.status === "invalid") console.error("Map provider configuration:", configuration.reason);
+  }, [configuration]);
   useEffect(() => {
     if (!element.current) return;
     const observer = new ResizeObserver(entries => {
@@ -27,16 +33,7 @@ export function LocationMap({ center, zoom, onZoom, onChange, onInteract, onLoca
     observer.observe(element.current);
     return () => observer.disconnect();
   }, []);
-  const tiles: { x: number; y: number; left: number; top: number }[] = [];
-  const startX = Math.floor((pixel.lng - size.width / 2 - offset.x) / 256);
-  const startY = Math.floor((pixel.lat - size.height / 2 - offset.y) / 256);
-  for (let dx = 0; dx < Math.ceil(size.width / 256) + 2; dx++) {
-    for (let dy = 0; dy < Math.ceil(size.height / 256) + 2; dy++) {
-      const x = startX + dx, y = startY + dy;
-      if (x < 0 || y < 0 || x >= 2 ** zoom || y >= 2 ** zoom) continue;
-      tiles.push({ x, y, left: x * 256 - pixel.lng + size.width / 2 + offset.x, top: y * 256 - pixel.lat + size.height / 2 + offset.y });
-    }
-  }
+  const tiles = visibleTiles(center, zoom, size, offset);
   function move(x: number, y: number) {
     if (disabled) return;
     const next = unproject({ lng: pixel.lng + x, lat: pixel.lat + y }, zoom);
@@ -65,18 +62,16 @@ export function LocationMap({ center, zoom, onZoom, onChange, onInteract, onLoca
         element.current?.releasePointerCapture(e.pointerId);
       }}
       onPointerCancel={() => { drag.current = null; setOffset({ x: 0, y: 0 }); }}>
-      <div className="map-tiles" aria-hidden="true">
-        {tileTemplate && tiles.map(tile => <img key={`${zoom}-${tile.x}-${tile.y}`} src={tileTemplate.replace("{z}", String(zoom)).replace("{x}", String(tile.x)).replace("{y}", String(tile.y))} alt="" draggable={false} width={256} height={256} referrerPolicy="no-referrer" style={{ left: tile.left, top: tile.top }} onError={() => setFailed(true)} />)}
-      </div>
+      {provider && <RasterTileLayer key={`${provider.id}:${provider.tileUrlTemplate}`} provider={provider} tiles={tiles} />}
       {diameter > 0 && <div className="accuracy-area" style={{ width: Math.min(diameter, 3000), height: Math.min(diameter, 3000) }} aria-hidden="true" />}
       <div className="center-marker" aria-hidden="true"><div className="marker-label">{demo ? "محل نمونه" : "محل انتخاب‌شده"}</div><svg width="48" height="62" viewBox="0 0 48 62"><path d="M24 59C21 49 4 36 4 23a20 20 0 0 1 40 0c0 13-17 26-20 36Z" fill="#087f65" stroke="white" strokeWidth="3"/><circle cx="24" cy="23" r="7" fill="white"/></svg><span className="marker-crosshair" /></div>
     </div>
     <div className="map-kind"><span /> نقشه خیابان‌ها</div>
-    <div className="zoom-controls"><button disabled={disabled || zoom >= 18} onClick={() => onZoom(Math.min(18, zoom + 1))} aria-label="بزرگ کردن نقشه"><Icon name="plus" /></button><button disabled={disabled || zoom <= 5} onClick={() => onZoom(Math.max(5, zoom - 1))} aria-label="کوچک کردن نقشه"><Icon name="minus" /></button></div>
+    <div className="zoom-controls"><button disabled={disabled || !provider || zoom >= limits.max} onClick={() => onZoom(Math.min(limits.max, zoom + 1))} aria-label="بزرگ کردن نقشه"><Icon name="plus" /></button><button disabled={disabled || !provider || zoom <= limits.min} onClick={() => onZoom(Math.max(limits.min, zoom - 1))} aria-label="کوچک کردن نقشه"><Icon name="minus" /></button></div>
     <button className="map-locate" disabled={disabled} onClick={onLocate} aria-label="پیدا کردن موقعیت من"><Icon name="locate" /></button>
     <div className="map-instruction"><Icon name="pin" size={20} /><span>نقشه را حرکت دهید؛ نشانگر را روی محل خود بگذارید.</span></div>
-    <span className="map-attribution" dir="ltr">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a></span>
-    {(failed || !tileTemplate) && <div className="map-unavailable" role="status">نقشه بارگیری نشد. نشانی و نشانه نزدیک را بنویسید یا با ۱۱۵ تماس بگیرید.</div>}
+    {provider && <span className="map-attribution" dir="ltr">{provider.attributions.map((item, index) => <span key={item.url}>{index > 0 && " · "}<a href={item.url} target="_blank" rel="noreferrer">{item.text}</a></span>)}</span>}
+    {!provider && <div className="map-unavailable" role="status">نقشه در دسترس نیست. نشانی و نشانه نزدیک را بنویسید یا با ۱۱۵ تماس بگیرید.</div>}
     <button className="map-keyboard" disabled={disabled} aria-expanded={buttons} onClick={() => setButtons(v => !v)}>جابه‌جایی بدون کشیدن <Icon name="chevron" size={16} /></button>
     {buttons && <div className="direction-controls" aria-label="جابه‌جایی نشانگر"><button onClick={() => move(0, -40)} disabled={disabled}>شمال</button><button onClick={() => move(40, 0)} disabled={disabled}>شرق</button><button onClick={() => move(0, 40)} disabled={disabled}>جنوب</button><button onClick={() => move(-40, 0)} disabled={disabled}>غرب</button></div>}
   </div>;

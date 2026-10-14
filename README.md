@@ -19,6 +19,59 @@ npm run build
 
 Copy `.env.example` to `.env.local` and configure a real dispatch gateway before operational use. Secrets never use `NEXT_PUBLIC_` names. HTTPS is mandatory for production geolocation and secure cookies. Map and search failures retain manual address entry and a direct `tel:115` path. This application collects location; receiving location does **not** establish that an ambulance has been dispatched.
 
+## Environment configuration and map providers
+
+`.env.example` documents settings; Next.js does not load that filename. Copy it to `.env.local` **in the project root**, then restart `npm run dev`. Do not overwrite an existing `.env.local`; merge settings into it. Set `NEXT_PUBLIC_*` values before building production: they are compiled into browser JavaScript, so changing them requires rebuilding/redeploying. See [Next.js environment variables](https://nextjs.org/docs/app/guides/environment-variables).
+
+For the local demonstration, use:
+
+```dotenv
+APP_ORIGIN=http://localhost:3000
+NEXT_PUBLIC_MAP_PROVIDER=osm
+```
+
+Leave gateway/dispatcher credentials blank if only testing `/`. No OpenStreetMap account or API token is required for its standard raster tiles. These tiles do not supply our dispatch, carrier lookup, or gateway reverse-geocoding services.
+
+| Variable | How to fill it |
+| --- | --- |
+| `APP_ORIGIN` | Exact app origin without path/trailing slash. Local: `http://localhost:3000` (match your actual port/host). Real patient/SMS use: public HTTPS origin such as `https://emergency.your-domain.ir`. Localhost on a patient's phone refers to that phone, not your PC. |
+| `DISPATCHER_API_KEY` | Server-only shared secret for authorized callers of this app's `/api/emergency/incident`. Generate with `openssl rand -hex 32`; configure your trusted dispatcher to send the same value as a Bearer token. Not an OSM credential. |
+| `DISPATCH_GATEWAY_URL` | HTTPS base URL of **your existing/implemented durable dispatch gateway**, e.g. `https://dispatch.your-domain.ir/api/`. It must implement the API contracts below; a random URL or OSM URL will not work. Leave empty for demo-only use. |
+| `DISPATCH_GATEWAY_KEY` | Server-only credential issued/configured by the gateway operator, used by this app to authenticate to that gateway. SMS, operator LBS, and geocoder credentials are configured separately at the gateway. |
+| `TRUSTED_CLIENT_IP_HEADER` | Optional: `cf-connecting-ip` or `x-real-ip` only when trusted ingress strips/overwrites incoming values. Leave blank locally or without that guarantee. Enables coarse IP baseline lookup through the gateway. |
+| `NEXT_PUBLIC_MAP_PROVIDER` | `osm`, `custom`, or `disabled`. `osm` selects the policy-compliant built-in profile; no token. `custom` uses the following URL/credit settings. `disabled` sends no tile requests. Blank preserves OSM demo default; actual patient flow requires explicit configuration. |
+| `NEXT_PUBLIC_MAP_TILE_URL` | Custom only: complete HTTPS **256px Web-Mercator raster XYZ** template containing `{z}`, `{x}`, `{y}`. Obtain from your chosen tile provider or self-hosted server. Browser-visible; only provider-approved public/domain-restricted credentials may appear here. Leave blank with `osm`. |
+| `NEXT_PUBLIC_MAP_ATTRIBUTION_TEXT` | Custom only: provider's required visible credit text, including all underlying data licenses. Quote text with spaces/symbols in `.env.local`, e.g. `"© Your provider · © OpenStreetMap contributors"` for an OSM-derived service. |
+| `NEXT_PUBLIC_MAP_ATTRIBUTION_URL` | Custom only: provider's HTTPS attribution/licensing page. Built-in OSM credit/link are supplied automatically and cannot be replaced with incorrect custom credit. |
+
+Switch to another raster provider without changing patient logic:
+
+```dotenv
+NEXT_PUBLIC_MAP_PROVIDER=custom
+NEXT_PUBLIC_MAP_TILE_URL=https://tiles.your-provider.ir/{z}/{x}/{y}.png
+NEXT_PUBLIC_MAP_ATTRIBUTION_TEXT="© Your provider · © OpenStreetMap contributors"
+NEXT_PUBLIC_MAP_ATTRIBUTION_URL=https://www.your-provider.ir/attribution
+```
+
+Replace these examples with the **actual** template and credits from your provider. A paid provider may require a browser-approved public key in its URL; do not place private keys in public variables. Tile provider selection is independent of the gateway's reverse-geocoding/search provider.
+
+Provider architecture:
+
+- `src/lib/map/providers.ts` owns provider selection, validation, URL, attribution, zoom limits, and request/referrer policy. Register unusual raster vendors here. Existing canonical OSM `NEXT_PUBLIC_MAP_TILE_URL` configurations still work.
+- `src/lib/map/types.ts` defines the raster contract. `src/lib/map/tiles.ts` handles XYZ/TMS addressing and requests **only** viewport-intersecting tiles, with no prefetch.
+- `RasterTileLayer.tsx` renders normal browser images, preserves upstream/browser HTTP caching, scopes errors to visible tiles, and retries failed images only on patient request. It does not append cache-busting parameters, invent headers, rotate hosts, or automatically fall back to a different provider.
+- `LocationMap.tsx` retains accessible pan/zoom/pin interaction and renders selected provider credits. Geolocation acquisition, patient state, incident authorization, and dispatch stay provider-independent.
+
+The configurable adapter handles raster XYZ. TMS profiles can be registered using `scheme: "tms"`; vendor zoom limits belong in their profile. Vector styles/tiles and SDK-only providers need a separate rendering adapter at the map boundary; they cannot work by pasting a `.pbf` or style JSON URL into an `<img>` template. This boundary avoids rewriting GPS/dispatch logic even when the renderer changes.
+
+### OpenStreetMap 403 and tile policy
+
+The original tile images used `referrerPolicy="no-referrer"`; OSM requires a valid `Referer` for web tiles. The OSM profile now sets **origin-only** image referrers (for example `http://localhost:3000/`). Document/API defaults remain `no-referrer`, and patient tokens/paths are not included in tile referrers. Native browser User-Agent and cache behavior are preserved. Attribution is visible and tiles are limited to the current viewport.
+
+OSM standard tiles require no API token, but are a shared, best-effort service with no availability guarantee. Use a licensed/self-hosted service with suitable coverage/availability for real emergency operations. Follow [OSM tile usage policy](https://operations.osmfoundation.org/policies/tiles/). If 403 persists after this fix, check browser extensions/referrer stripping, VPN/proxy/network blocks, or provider rate restrictions. Do not bypass blocks through spoofed headers or host rotation.
+
+Browser smoke tests intercept and fulfill tile requests with local fixtures; they do not pan/zoom/download real OSM tiles. Tests verify origin-only referrers, recovery after failed tiles, viewport-only loading, and provider attribution/configuration. Human preview remains ordinary interactive viewing.
+
 ## Modules
 
 | Module | Responsibility |
@@ -116,12 +169,12 @@ On retry, server first calls gateway `POST dispatch/status` with the same full e
 - Conservative output radius is the maximum recent reported radius plus each sample's distance from the latest fix. It is not an independently measured or guaranteed error bound. Never present it as a guarantee.
 - GPS lock becomes stale after 30 seconds; carrier/IP baseline after two minutes. Source and uncertainty remain distinct. Manual selection reports `accuracy:null` and patient verification, not fabricated meter accuracy. National-level map view cannot be submitted as a precise doorway; zoom/search first.
 - Iran polygons are extracted from [datasets/geo-countries](https://github.com/datasets/geo-countries), which uses Natural Earth geometry. This is geographic filtering, not an official survey/jurisdiction boundary. Confirm operational border/island coverage with your dispatch authority before deployment.
-- Demo tiles use OpenStreetMap, with visible attribution. Production `/locate` requires your licensed/self-hosted tile URL; it has no external default. Map tiles reveal the viewed region to that provider. Use a provider allowed by your privacy policy and reachable on target Iranian networks. No satellite view is offered.
+- Demo tiles use OpenStreetMap, with visible attribution. Production `/locate` requires explicit map provider configuration; unconfigured patient flow has no external default. Map tiles reveal the viewed region to that provider. Use a provider allowed by your privacy policy and reachable on target Iranian networks. No satellite view is offered.
 - Offline submissions are not stored or claimed as delivered. Patient selection stays in page memory; restore connectivity and retry, or call 115. No service worker caches patient data. Unsupported WebViews show manual fallback and browser instructions.
 
 ## Verification and operational readiness
 
-30 automated unit tests cover Iranian cities/islands, polygon rejection, map projection, sample freshness, dynamic accuracy thresholds, anomaly recovery, state isolation, verification requirements, metadata validation, and stale retry behavior. Browser smoke checks cover desktop/mobile layout, minimum touch sizes, real map loading, permission dialog, demo-only receipt, invalid links, mocked GPS acquisition, manual override, and retry idempotency. Run `node tests/browser-smoke.mjs http://localhost:3000` with an isolated Chrome debug session on port 9223; it saves screenshots to `/tmp/emergency-*.png`. `CHROME_DEBUG_URL` can select a different debug endpoint. Browser provider/sensor fixtures do not certify actual carrier delivery.
+Automated unit tests cover Iranian cities/islands, polygon rejection, map projection, sample freshness, dynamic accuracy thresholds, anomaly recovery, state isolation, verification requirements, metadata validation, and stale retry behavior. Browser smoke checks cover desktop/mobile layout, minimum touch sizes, real map loading, permission dialog, demo-only receipt, invalid links, mocked GPS acquisition, manual override, and retry idempotency. Run `node tests/browser-smoke.mjs http://localhost:3000` with an isolated Chrome debug session on port 9223; it saves screenshots to `/tmp/emergency-*.png`. `CHROME_DEBUG_URL` can select a different debug endpoint. Browser provider/sensor fixtures do not certify actual carrier delivery.
 
 Before real emergency use, integrate and test the carrier/SMS/geocoder/dispatch gateway against provider sandboxes, verify durable receipts and distributed rate limits, deploy via HTTPS with ingress log redaction and encrypted data retention controls, and measure end-to-end timing on target mobile networks. Native iPhone Safari, Android Chrome, denied OS permissions, in-app browsers, interrupted connectivity, jammed/spoofed locations, and elderly-user comprehension require physical-device and operator acceptance tests. Provider outages and authoritative “not accepted” responses need monitored runbooks. This checkout has no real operator credentials and has not been certified for emergency operations.
 
